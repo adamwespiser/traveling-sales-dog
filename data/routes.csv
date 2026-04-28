@@ -1,0 +1,10 @@
+route_id,distance_miles,area,has_run_area
+R1,0.2,lincon park,1
+R2,0.3,perry park,1
+R3,0.6,aaas woods,1
+R4,0.4,cha park,0
+R5,0.3,community plaza,0
+R6,0.2,neighbors house,0
+R7,0.8,harvard,0
+R8,0.3,union sq,0
+R9,0.4,martha perry lowe park,0
