@@ -1,6 +1,6 @@
 # Traveling Salesdog
 
-Minimal Julia + JuMP optimizer for a senior dog walking schedule.
+Minimal Julia + JuMP optimizer for a dog walking schedule.
 
 The model chooses one route for each morning and night walk over seven days. It
 rewards variety and run/play opportunities while penalizing dog effort: total
