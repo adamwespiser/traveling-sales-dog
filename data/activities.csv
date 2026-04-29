@@ -1,4 +1,4 @@
-route_id,distance_miles,area,has_run_area
+activity_id,distance_miles,area,has_run_area
 R1,0.2,lincon park,1
 R2,0.3,perry park,1
 R3,0.6,aaas woods,1

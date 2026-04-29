@@ -8,7 +8,7 @@ const WALK_TIMES = ["morning", "night"]
 
 function parse_args(args)
     options = Dict(
-        "routes" => "data/routes.csv",
+        "activities" => "data/activities.csv",
         "max-daily-distance" => "2.0",
         "w-area" => "4.0",
         "w-run" => "1.5",
@@ -36,75 +36,75 @@ function parse_args(args)
     return options
 end
 
-function load_routes(path)
-    routes = CSV.read(path, DataFrame)
-    required = [:route_id, :distance_miles, :area, :has_run_area]
-    missing = setdiff(required, Symbol.(names(routes)))
+function load_activities(path)
+    activities = CSV.read(path, DataFrame)
+    required = [:activity_id, :distance_miles, :area, :has_run_area]
+    missing = setdiff(required, Symbol.(names(activities)))
     isempty(missing) || error("Missing required CSV columns: $(join(missing, ", "))")
 
-    routes.route_id = string.(routes.route_id)
-    routes.area = string.(routes.area)
-    routes.has_run_area = Int.(routes.has_run_area)
-    routes.distance_miles = Float64.(routes.distance_miles)
+    activities.activity_id = string.(activities.activity_id)
+    activities.area = string.(activities.area)
+    activities.has_run_area = Int.(activities.has_run_area)
+    activities.distance_miles = Float64.(activities.distance_miles)
 
-    any(routes.distance_miles .< 0) && error("distance_miles must be non-negative")
-    any((routes.has_run_area .!= 0) .& (routes.has_run_area .!= 1)) && error("has_run_area must be 0 or 1")
-    length(unique(routes.route_id)) == nrow(routes) || error("route_id values must be unique")
+    any(activities.distance_miles .< 0) && error("distance_miles must be non-negative")
+    any((activities.has_run_area .!= 0) .& (activities.has_run_area .!= 1)) && error("has_run_area must be 0 or 1")
+    length(unique(activities.activity_id)) == nrow(activities) || error("activity_id values must be unique")
 
-    return routes
+    return activities
 end
 
-function solve_schedule(routes; max_daily_distance, weights)
+function solve_schedule(activities; max_daily_distance, weights)
     day_count = length(DAYS)
     walk_count = length(WALK_TIMES)
-    route_count = nrow(routes)
-    route_indexes = 1:route_count
+    activity_count = nrow(activities)
+    activity_indexes = 1:activity_count
     day_indexes = 1:day_count
     walk_indexes = 1:walk_count
-    areas = sort(unique(routes.area))
+    areas = sort(unique(activities.area))
 
     model = Model(HiGHS.Optimizer)
     set_silent(model)
 
-    @variable(model, x[day_indexes, walk_indexes, route_indexes], Bin)
+    @variable(model, x[day_indexes, walk_indexes, activity_indexes], Bin)
     @variable(model, y[areas], Bin)
-    round_trip_distance = 2 .* routes.distance_miles
+    round_trip_distance = 2 .* activities.distance_miles
 
-    # Pick exactly one route for each walk slot: morning and night.
-    @constraint(model, [d in day_indexes, w in walk_indexes], sum(x[d, w, r] for r in route_indexes) == 1)
+    # Pick exactly one activity for each walk slot: morning and night.
+    @constraint(model, [d in day_indexes, w in walk_indexes], sum(x[d, w, a] for a in activity_indexes) == 1)
 
     # Keep the combined morning plus night pavement distance within the daily limit.
     @constraint(model, [d in day_indexes],
-        sum(round_trip_distance[r] * x[d, w, r] for w in walk_indexes, r in route_indexes) <= max_daily_distance
+        sum(round_trip_distance[a] * x[d, w, a] for w in walk_indexes, a in activity_indexes) <= max_daily_distance
     )
 
-    # Require at least one daily route with a run/play area.
+    # Require at least one daily activity with a run/play area.
     @constraint(model, [d in day_indexes],
-        sum(routes.has_run_area[r] * x[d, w, r] for w in walk_indexes, r in route_indexes) >= 1
+        sum(activities.has_run_area[a] * x[d, w, a] for w in walk_indexes, a in activity_indexes) >= 1
     )
 
-    # Prevent using the same route in both walk slots on the same day.
-    @constraint(model, [d in day_indexes, r in route_indexes], sum(x[d, w, r] for w in walk_indexes) <= 1)
+    # Prevent using the same activity in both walk slots on the same day.
+    @constraint(model, [d in day_indexes, a in activity_indexes], sum(x[d, w, a] for w in walk_indexes) <= 1)
 
-    # Novelty rule: if a route was used at any time yesterday, do not use it today.
-    @constraint(model, [d in 2:day_count, r in route_indexes],
-        sum(x[d, w, r] for w in walk_indexes) + sum(x[d - 1, w, r] for w in walk_indexes) <= 1
+    # Novelty rule: if an activity was used at any time yesterday, do not use it today.
+    @constraint(model, [d in 2:day_count, a in activity_indexes],
+        sum(x[d, w, a] for w in walk_indexes) + sum(x[d - 1, w, a] for w in walk_indexes) <= 1
     )
 
     for area in areas
-        area_routes = findall(==(area), routes.area)
+        area_activities = findall(==(area), activities.area)
 
-        # If y[area] is 1, at least one selected route must visit that area.
-        @constraint(model, y[area] <= sum(x[d, w, r] for d in day_indexes, w in walk_indexes, r in area_routes))
+        # If y[area] is 1, at least one selected activity must visit that area.
+        @constraint(model, y[area] <= sum(x[d, w, a] for d in day_indexes, w in walk_indexes, a in area_activities))
 
-        # If any route in this area is selected, mark this area as visited.
-        @constraint(model, [d in day_indexes, w in walk_indexes, r in area_routes], y[area] >= x[d, w, r])
+        # If any activity in this area is selected, mark this area as visited.
+        @constraint(model, [d in day_indexes, w in walk_indexes, a in area_activities], y[area] >= x[d, w, a])
     end
 
     @objective(model, Max,
         weights.area * sum(y[area] for area in areas) +
-        weights.run * sum(routes.has_run_area[r] * x[d, w, r] for d in day_indexes, w in walk_indexes, r in route_indexes) -
-        weights.distance * sum(round_trip_distance[r] * x[d, w, r] for d in day_indexes, w in walk_indexes, r in route_indexes)
+        weights.run * sum(activities.has_run_area[a] * x[d, w, a] for d in day_indexes, w in walk_indexes, a in activity_indexes) -
+        weights.distance * sum(round_trip_distance[a] * x[d, w, a] for d in day_indexes, w in walk_indexes, a in activity_indexes)
     )
 
     optimize!(model)
@@ -116,7 +116,7 @@ function solve_schedule(routes; max_daily_distance, weights)
     chosen = DataFrame(
         day = String[],
         walk_time = String[],
-        route_id = String[],
+        activity_id = String[],
         area = String[],
         one_way_distance_miles = Float64[],
         round_trip_distance_miles = Float64[],
@@ -125,63 +125,63 @@ function solve_schedule(routes; max_daily_distance, weights)
 
     for d in day_indexes
         for w in walk_indexes
-            r = only(filter(r -> value(x[d, w, r]) > 0.5, route_indexes))
+            a = only(filter(a -> value(x[d, w, a]) > 0.5, activity_indexes))
             push!(chosen, (
                 DAYS[d],
                 WALK_TIMES[w],
-                routes.route_id[r],
-                routes.area[r],
-                routes.distance_miles[r],
-                round_trip_distance[r],
-                routes.has_run_area[r],
+                activities.activity_id[a],
+                activities.area[a],
+                activities.distance_miles[a],
+                round_trip_distance[a],
+                activities.has_run_area[a],
             ))
         end
     end
 
-    optimal_solution_count = count_optimal_solutions(routes; max_daily_distance, weights)
-    raw_search_space_size = BigInt(route_count)^(day_count * walk_count)
+    optimal_solution_count = count_optimal_solutions(activities; max_daily_distance, weights)
+    raw_search_space_size = BigInt(activity_count)^(day_count * walk_count)
 
     return chosen, objective_value(model), optimal_solution_count, raw_search_space_size
 end
 
-function count_optimal_solutions(routes; max_daily_distance, weights)
+function count_optimal_solutions(activities; max_daily_distance, weights)
     scale = 1_000_000
-    route_count = nrow(routes)
-    route_indexes = 1:route_count
-    areas = sort(unique(routes.area))
+    activity_count = nrow(activities)
+    activity_indexes = 1:activity_count
+    areas = sort(unique(activities.area))
     area_bit = Dict(area => UInt64(1) << (i - 1) for (i, area) in enumerate(areas))
-    round_trip_distance = 2 .* routes.distance_miles
+    round_trip_distance = 2 .* activities.distance_miles
 
     pairs = []
-    for morning in route_indexes, night in route_indexes
+    for morning in activity_indexes, night in activity_indexes
         morning == night && continue
         distance = round_trip_distance[morning] + round_trip_distance[night]
         distance <= max_daily_distance || continue
-        run_count = routes.has_run_area[morning] + routes.has_run_area[night]
+        run_count = activities.has_run_area[morning] + activities.has_run_area[night]
         run_count >= 1 || continue
 
-        route_mask = (UInt64(1) << (morning - 1)) | (UInt64(1) << (night - 1))
-        area_mask = area_bit[routes.area[morning]] | area_bit[routes.area[night]]
+        activity_mask = (UInt64(1) << (morning - 1)) | (UInt64(1) << (night - 1))
+        area_mask = area_bit[activities.area[morning]] | area_bit[activities.area[night]]
         score = weights.run * run_count - weights.distance * distance
 
         push!(pairs, (
-            route_mask = route_mask,
+            activity_mask = activity_mask,
             area_mask = area_mask,
             score = round(Int, score * scale),
         ))
     end
 
-    # State is (yesterday's route mask, areas visited so far, score excluding area reward).
+    # State is (yesterday's activity mask, areas visited so far, score excluding area reward).
     states = Dict{Tuple{UInt64, UInt64, Int}, BigInt}((UInt64(0), UInt64(0), 0) => BigInt(1))
 
     for _ in DAYS
         next_states = Dict{Tuple{UInt64, UInt64, Int}, BigInt}()
-        for ((previous_route_mask, visited_area_mask, score), count) in states
+        for ((previous_activity_mask, visited_area_mask, score), count) in states
             for pair in pairs
-                (previous_route_mask & pair.route_mask) == 0 || continue
+                (previous_activity_mask & pair.activity_mask) == 0 || continue
 
                 key = (
-                    pair.route_mask,
+                    pair.activity_mask,
                     visited_area_mask | pair.area_mask,
                     score + pair.score,
                 )
@@ -215,7 +215,7 @@ function print_schedule(schedule, objective, optimal_solution_count, raw_search_
         println(day * ":")
         for row in eachrow(filter(:day => ==(day), schedule))
             run_label = row.has_run_area == 1 ? "run/play" : "sniff walk"
-            println("  ", rpad(row.walk_time * ":", 9), "$(row.route_id) ($(row.area), $(run_label), $(round(row.round_trip_distance_miles, digits = 2)) mi under foot)")
+            println("  ", rpad(row.walk_time * ":", 9), "$(row.activity_id) ($(row.area), $(run_label), $(round(row.round_trip_distance_miles, digits = 2)) mi under foot)")
         end
     end
 
@@ -236,7 +236,7 @@ end
 
 function main(args = ARGS)
     options = parse_args(args)
-    routes = load_routes(options["routes"])
+    activities = load_activities(options["activities"])
     weights = (
         area = parse(Float64, options["w-area"]),
         run = parse(Float64, options["w-run"]),
@@ -244,7 +244,7 @@ function main(args = ARGS)
     )
 
     schedule, objective, optimal_solution_count, raw_search_space_size = solve_schedule(
-        routes;
+        activities;
         max_daily_distance = parse(Float64, options["max-daily-distance"]),
         weights,
     )
