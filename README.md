@@ -3,8 +3,8 @@
 Minimal Julia + JuMP optimizer for a dog walking schedule.
 
 The model chooses one activity for each morning and night walk over seven days. It
-rewards variety and run/play opportunities while penalizing dog effort: total
-mileage under foot.
+rewards activity variety and run/play opportunities while penalizing dog effort:
+total mileage under foot.
 
 ## Setup
 
@@ -54,7 +54,7 @@ R1,1.1,park,1
 Decision variables:
 
 - `x[d, w, a]`: activity `a` is chosen on day `d` for walk slot `w`
-- `y[a]`: area `a` is visited at least once during the week
+- `used_activity[a]`: activity `a` is used at least once during the week
 
 Constraints:
 
@@ -63,13 +63,13 @@ Constraints:
 - at least one run/play activity per day
 - no same activity for both walks on the same day
 - novelty rule: an activity used yesterday cannot be used today
-- area usage is linked to selected activities
+- activity usage is linked to selected walks
 
 Objective:
 
 ```text
 maximize
-  w_area * unique areas
+  w_area * unique activities
 + w_run * run/play walks
 - w_distance * total distance
 ```

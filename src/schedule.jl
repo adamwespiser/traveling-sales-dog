@@ -61,13 +61,12 @@ function solve_schedule(activities; max_daily_distance, weights)
     activity_indexes = 1:activity_count
     day_indexes = 1:day_count
     walk_indexes = 1:walk_count
-    areas = sort(unique(activities.area))
 
     model = Model(HiGHS.Optimizer)
     set_silent(model)
 
     @variable(model, x[day_indexes, walk_indexes, activity_indexes], Bin)
-    @variable(model, y[areas], Bin)
+    @variable(model, used_activity[activity_indexes], Bin)
     round_trip_distance = 2 .* activities.distance_miles
 
     # Pick exactly one activity for each walk slot: morning and night.
@@ -91,18 +90,16 @@ function solve_schedule(activities; max_daily_distance, weights)
         sum(x[d, w, a] for w in walk_indexes) + sum(x[d - 1, w, a] for w in walk_indexes) <= 1
     )
 
-    for area in areas
-        area_activities = findall(==(area), activities.area)
+    # If used_activity[a] is 1, activity a must appear somewhere in the schedule.
+    @constraint(model, [a in activity_indexes],
+        used_activity[a] <= sum(x[d, w, a] for d in day_indexes, w in walk_indexes)
+    )
 
-        # If y[area] is 1, at least one selected activity must visit that area.
-        @constraint(model, y[area] <= sum(x[d, w, a] for d in day_indexes, w in walk_indexes, a in area_activities))
-
-        # If any activity in this area is selected, mark this area as visited.
-        @constraint(model, [d in day_indexes, w in walk_indexes, a in area_activities], y[area] >= x[d, w, a])
-    end
+    # If activity a is selected for any walk, mark that activity as used.
+    @constraint(model, [d in day_indexes, w in walk_indexes, a in activity_indexes], used_activity[a] >= x[d, w, a])
 
     @objective(model, Max,
-        weights.area * sum(y[area] for area in areas) +
+        weights.area * sum(used_activity[a] for a in activity_indexes) +
         weights.run * sum(activities.has_run_area[a] * x[d, w, a] for d in day_indexes, w in walk_indexes, a in activity_indexes) -
         weights.distance * sum(round_trip_distance[a] * x[d, w, a] for d in day_indexes, w in walk_indexes, a in activity_indexes)
     )
@@ -148,8 +145,6 @@ function count_optimal_solutions(activities; max_daily_distance, weights)
     scale = 1_000_000
     activity_count = nrow(activities)
     activity_indexes = 1:activity_count
-    areas = sort(unique(activities.area))
-    area_bit = Dict(area => UInt64(1) << (i - 1) for (i, area) in enumerate(areas))
     round_trip_distance = 2 .* activities.distance_miles
 
     pairs = []
@@ -161,28 +156,26 @@ function count_optimal_solutions(activities; max_daily_distance, weights)
         run_count >= 1 || continue
 
         activity_mask = (UInt64(1) << (morning - 1)) | (UInt64(1) << (night - 1))
-        area_mask = area_bit[activities.area[morning]] | area_bit[activities.area[night]]
         score = weights.run * run_count - weights.distance * distance
 
         push!(pairs, (
             activity_mask = activity_mask,
-            area_mask = area_mask,
             score = round(Int, score * scale),
         ))
     end
 
-    # State is (yesterday's activity mask, areas visited so far, score excluding area reward).
+    # State is (yesterday's activity mask, activities used so far, score excluding variety reward).
     states = Dict{Tuple{UInt64, UInt64, Int}, BigInt}((UInt64(0), UInt64(0), 0) => BigInt(1))
 
     for _ in DAYS
         next_states = Dict{Tuple{UInt64, UInt64, Int}, BigInt}()
-        for ((previous_activity_mask, visited_area_mask, score), count) in states
+        for ((previous_activity_mask, used_activity_mask, score), count) in states
             for pair in pairs
                 (previous_activity_mask & pair.activity_mask) == 0 || continue
 
                 key = (
                     pair.activity_mask,
-                    visited_area_mask | pair.area_mask,
+                    used_activity_mask | pair.activity_mask,
                     score + pair.score,
                 )
                 next_states[key] = get(next_states, key, BigInt(0)) + count
@@ -193,9 +186,9 @@ function count_optimal_solutions(activities; max_daily_distance, weights)
 
     best_score = typemin(Int)
     best_count = BigInt(0)
-    for ((_, visited_area_mask, score), count) in states
-        area_score = round(Int, weights.area * count_ones(visited_area_mask) * scale)
-        total_score = score + area_score
+    for ((_, used_activity_mask, score), count) in states
+        variety_score = round(Int, weights.area * count_ones(used_activity_mask) * scale)
+        total_score = score + variety_score
 
         if total_score > best_score
             best_score = total_score
@@ -221,14 +214,14 @@ function print_schedule(schedule, objective, optimal_solution_count, raw_search_
 
     total_distance = sum(schedule.round_trip_distance_miles)
     run_days = sum(schedule.has_run_area)
-    unique_areas = length(unique(schedule.area))
+    unique_activities = length(unique(schedule.activity_id))
 
     println()
     println("Summary")
     println("=======")
     println("objective value:      ", round(objective, digits = 3))
     println("mileage under foot:   ", round(total_distance, digits = 2), " miles")
-    println("unique areas:         ", unique_areas)
+    println("unique activities:    ", unique_activities)
     println("run/play walks:       ", run_days)
     println("instances at optimum: ", optimal_solution_count)
     println("raw search space:     ", raw_search_space_size, " schedules")
